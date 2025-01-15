@@ -1,28 +1,39 @@
-app = "congress-legislators-api"  # replace with your app name
+# fly.toml app configuration file generated for congress-legislators-api on 2025-01-14T23:48:15-05:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'congress-legislators-api'
+primary_region = 'mia'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8787"
+  PORT = '8787'
 
 [http_service]
   internal_port = 8787
   force_https = true
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
 [[services]]
-  protocol = "tcp"
+  protocol = 'tcp'
   internal_port = 8787
-  processes = ["app"]
+  processes = ['app']
 
   [[services.ports]]
     port = 80
-    handlers = ["http"]
+    handlers = ['http']
     force_https = true
 
   [[services.ports]]
     port = 443
-    handlers = ["tls", "http"] 
+    handlers = ['tls', 'http']
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
