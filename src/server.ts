@@ -2,6 +2,7 @@ import express from "express";
 import yaml from "js-yaml";
 import fs from "fs";
 import path from "path";
+import cors from "cors";
 import { Response, Request } from "express";
 
 import dotenv from "dotenv";
@@ -52,7 +53,25 @@ interface Legislator {
   }>;
 }
 
+// New interface for the response
+interface LegislatorAddress {
+  name: string;
+  officeAddress?: string;
+  error?: string;
+}
+
 const app = express();
+
+// Add CORS middleware
+app.use(
+  cors({
+    origin: true, // Allow all origins
+    methods: ["GET", "POST"], // Allow only GET and POST methods
+    allowedHeaders: ["Content-Type"], // Allow Content-Type header
+    credentials: true, // Allow credentials
+  })
+);
+
 app.use(express.json());
 
 // Load YAML data file
@@ -165,6 +184,48 @@ app.get("/api/legislator", (req: Request, res: Response): void => {
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({ error: "Error finding legislator" });
+  }
+});
+
+// Update the API endpoint to handle array of names
+app.post("/api/legislators/addresses", (req: Request, res: Response): void => {
+  const { names, key } = req.body;
+
+  if (!key) {
+    res.status(400).json({ error: "key required" });
+  }
+
+  if (!Array.isArray(names)) {
+    res.status(400).json({ error: "Names must be provided as an array" });
+    return;
+  }
+
+  try {
+    const results: LegislatorAddress[] = names.map((name) => {
+      const legislator = findLegislatorByName(name);
+
+      if (!legislator) {
+        return {
+          name,
+          error: `No legislator found with name: ${name}`,
+        };
+      }
+
+      // Get current term
+      const currentTerm = legislator.terms[legislator.terms.length - 1];
+
+      return {
+        name:
+          legislator.name.official_full ||
+          `${legislator.name.first} ${legislator.name.last}`,
+        officeAddress: currentTerm.address || "No office address available",
+      };
+    });
+
+    res.json(results);
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ error: "Error finding legislators" });
   }
 });
 
