@@ -6,7 +6,7 @@ docker build -t congress-api .
 
 # -p 3000:8787 maps port 8787 from container to port 3000 on your host
 
-docker run -p 8787:8787 congress-api
+docker run -p 8787:8787 --env-file .env congress-api
 
 # To run in detached mode (background)
 

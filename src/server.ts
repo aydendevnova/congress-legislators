@@ -4,8 +4,23 @@ import fs from "fs";
 import path from "path";
 import cors from "cors";
 import { Response, Request } from "express";
-
 import dotenv from "dotenv";
+import { parse } from "csv-parse/sync";
+import {
+  getKansasDistrictFromGeo,
+  type KansasGeoResponse,
+} from "./kansas/kansas-geo";
+import {
+  KANSAS_STATE_CODE,
+  KANSAS_STATE_NAME,
+  isValidKansasDistrict,
+  getKansasDistrict,
+  kansasLegislators,
+} from "./kansas/kansas-districts";
+import {
+  type KansasDistrictResponse,
+  type KansasDistrict,
+} from "./kansas/kansas-types";
 
 dotenv.config();
 
@@ -13,6 +28,30 @@ const key = process.env.KEY;
 
 if (!key) {
   console.error("SERVER ERROR: Key is not in .env");
+}
+
+// Kansas related interfaces
+interface GeoPoint {
+  lat: number;
+  lng: number;
+}
+
+interface CensusAddressMatch {
+  geographies: {
+    "2024 State Legislative Districts - Upper"?: Array<{
+      GEOID: string;
+      SLDU: string;
+      NAME: string;
+      INTPTLAT: string;
+      INTPTLON: string;
+      AREAWATER: string;
+      AREALAND: string;
+    }>;
+  };
+  coordinates: {
+    x: number; // longitude
+    y: number; // latitude
+  };
 }
 
 // Define interfaces for the legislator data structure
@@ -228,6 +267,202 @@ app.post("/api/legislators/addresses", (req: Request, res: Response): void => {
     res.status(500).json({ error: "Error finding legislators" });
   }
 });
+
+// Kansas District by Address endpoint
+app.post(
+  "/api/kansas/district/address",
+  async (req: Request, res: Response): Promise<void> => {
+    console.log("Received request to /api/kansas/district/address");
+    console.log("Request body:", JSON.stringify(req.body, null, 2));
+
+    const { censusData, key } = req.body;
+
+    if (!key) {
+      console.log("Missing required key");
+      res.status(400).json({ error: "key required" });
+      return;
+    }
+
+    if (!censusData || !censusData.result) {
+      console.log("Invalid census data:", censusData);
+      res.status(400).json({
+        error: "Valid Census API response is required",
+      });
+      return;
+    }
+
+    try {
+      const geoResponse = await getKansasDistrictFromGeo(censusData);
+      console.log("Geo response:", geoResponse);
+
+      if (!geoResponse.found || !geoResponse.districtNumber) {
+        console.log("No district found in geo response");
+        res.status(404).json({
+          error:
+            geoResponse.error ||
+            "No Kansas legislative district found for this address",
+        });
+        return;
+      }
+
+      console.log(
+        "Looking up district info for district:",
+        geoResponse.districtNumber
+      );
+      const district = getKansasDistrict(geoResponse.districtNumber);
+
+      if (!district) {
+        console.log("No district information found");
+        res.status(404).json({
+          error: `No district information found for district ${geoResponse.districtNumber}`,
+        });
+        return;
+      }
+
+      // Get additional information from our Kansas legislators map
+      console.log(
+        "Looking up legislator info for district:",
+        geoResponse.districtNumber
+      );
+      const legislator = kansasLegislators.get(geoResponse.districtNumber);
+      console.log("Found legislator:", legislator);
+
+      const response = {
+        state: KANSAS_STATE_NAME,
+        stateCode: KANSAS_STATE_CODE,
+        districtNumber: district.districtNumber,
+        fullDistrict: `KS Senate District ${district.districtNumber}`,
+        coordinates: geoResponse.coordinates,
+        representative: district.representative,
+        officeAddress: district.officeAddress,
+        email: legislator?.email,
+        url: legislator?.url,
+      };
+      console.log("Sending response:", response);
+      res.json(response);
+    } catch (error) {
+      console.error("Error:", error);
+      res.status(500).json({ error: "Error finding Kansas district" });
+    }
+  }
+);
+
+// Update coordinates endpoint to use getKansasDistrictFromGeo
+app.post(
+  "/api/kansas/representative/coordinates",
+  async (req: Request, res: Response): Promise<void> => {
+    const { addressMatch, key } = req.body;
+
+    if (!key) {
+      res.status(400).json({ error: "key required" });
+      return;
+    }
+
+    if (!addressMatch || !addressMatch.geographies) {
+      res.status(400).json({
+        error: "addressMatch with Census geographic data is required",
+      });
+      return;
+    }
+
+    try {
+      const geoResponse = await getKansasDistrictFromGeo(addressMatch);
+
+      if (!geoResponse.found || !geoResponse.districtNumber) {
+        res.status(404).json({
+          error:
+            geoResponse.error ||
+            "No Kansas legislative district found for these coordinates",
+        });
+        return;
+      }
+
+      const district = getKansasDistrict(geoResponse.districtNumber);
+
+      if (!district) {
+        res.status(404).json({
+          error: `No representative found for district ${geoResponse.districtNumber}`,
+        });
+        return;
+      }
+
+      // Get additional information from our Kansas legislators map
+      const legislator = kansasLegislators.get(geoResponse.districtNumber);
+
+      const response: KansasDistrictResponse = {
+        state: KANSAS_STATE_NAME,
+        stateCode: KANSAS_STATE_CODE,
+        districtNumber: district.districtNumber,
+        fullDistrict: `KS Senate District ${district.districtNumber}`,
+        representative: district.representative,
+        officeAddress: district.officeAddress,
+        email: legislator?.email,
+        url: legislator?.url,
+      };
+
+      res.json(response);
+    } catch (error) {
+      console.error("Error:", error);
+      res.status(500).json({ error: "Error finding Kansas representative" });
+    }
+  }
+);
+
+// Kansas Representative by District endpoint
+app.get(
+  "/api/kansas/representative/district/:districtNumber",
+  async (req: Request, res: Response): Promise<void> => {
+    const { districtNumber } = req.params;
+    const { key } = req.query;
+
+    if (!key) {
+      res.status(400).json({ error: "key required" });
+      return;
+    }
+
+    if (!districtNumber) {
+      res.status(400).json({ error: "district number is required" });
+      return;
+    }
+
+    try {
+      if (!isValidKansasDistrict(districtNumber)) {
+        res.status(404).json({
+          error: `Invalid Kansas district number: ${districtNumber}`,
+        });
+        return;
+      }
+
+      const district = getKansasDistrict(districtNumber);
+
+      if (!district) {
+        res.status(404).json({
+          error: `No representative found for district ${districtNumber}`,
+        });
+        return;
+      }
+
+      // Get additional information from our Kansas legislators map
+      const legislator = kansasLegislators.get(districtNumber);
+
+      const response: KansasDistrictResponse = {
+        state: KANSAS_STATE_NAME,
+        stateCode: KANSAS_STATE_CODE,
+        districtNumber: district.districtNumber,
+        fullDistrict: `KS Senate District ${district.districtNumber}`,
+        representative: district.representative,
+        officeAddress: district.officeAddress,
+        email: legislator?.email,
+        url: legislator?.url,
+      };
+
+      res.json(response);
+    } catch (error) {
+      console.error("Error:", error);
+      res.status(500).json({ error: "Error finding Kansas representative" });
+    }
+  }
+);
 
 const PORT = process.env.PORT || 8787;
 app.listen(PORT, () => {
